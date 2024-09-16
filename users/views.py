@@ -20,16 +20,20 @@ from .serializers import (
     UserSerializer,
 )
 
+from .constants import (
+    ACTION_ACCEPT,
+    ACTION_REJECT,
+    FRIEND_REQUEST_ACCEPTED,
+    FRIEND_REQUEST_NOT_FOUND,
+    FRIEND_REQUEST_REJECTED,
+)
+
 User = get_user_model()
 
 
-class SignupView(APIView):
-    def post(self, request):
-        serializer = UserSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+class SignupView(generics.CreateAPIView):
+    serializer_class = UserSerializer
+    model = User
 
 
 class LoginView(APIView):
@@ -69,65 +73,97 @@ class ManageFriendRequestView(APIView):
         serializer = FriendRequestActionSerializer(data=request.data)
         if serializer.is_valid():
             try:
-                friend_request = FriendRequest.objects.get(
-                    id=serializer.validated_data["request_id"], to_user=request.user
+                friend_request = self.get_friend_request(
+                    serializer.validated_data["request_id"], request.user
                 )
                 action = serializer.validated_data["action"]
-                if action == "accept":
-                    friend_request.is_accepted = True
-                    friend_request.save()
-                    return Response(
-                        {"status": "Friend request accepted"}, status=status.HTTP_200_OK
+                if action == ACTION_ACCEPT:
+                    self.accept_friend_request(friend_request)
+                    return self.create_response(
+                        FRIEND_REQUEST_ACCEPTED, status.HTTP_200_OK
                     )
-                elif action == "reject":
-                    friend_request.delete()
-                    return Response(
-                        {"status": "Friend request rejected"}, status=status.HTTP_200_OK
+                elif action == ACTION_REJECT:
+                    self.reject_friend_request(friend_request)
+                    return self.create_response(
+                        FRIEND_REQUEST_REJECTED, status.HTTP_200_OK
                     )
             except FriendRequest.DoesNotExist:
-                return Response(
-                    {"error": "Friend request not found"},
-                    status=status.HTTP_404_NOT_FOUND,
+                return self.create_response(
+                    FRIEND_REQUEST_NOT_FOUND, status.HTTP_404_NOT_FOUND
                 )
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            except Exception as e:
+                return self.create_response(
+                    {"error": str(e)}, status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+        return self.create_response(serializer.errors, status.HTTP_400_BAD_REQUEST)
+
+    def get_friend_request(request_id, user):
+        return FriendRequest.objects.get(id=request_id, to_user=user)
+
+    def accept_friend_request(friend_request):
+        friend_request.is_accepted = True
+        friend_request.save()
+
+    def reject_friend_request(friend_request):
+        friend_request.delete()
+
+    def create_response(data, status_code):
+        return Response(data, status=status_code)
 
 
 class SendFriendRequestView(APIView):
     permission_classes = (IsAuthenticated,)
 
     def post(self, request):
-        to_user_id = request.data.get("to_user_id")
+        to_user_id = self.get_to_user_id(request)
         if not to_user_id:
-            return Response(
-                {"error": "to_user_id is required"}, status=status.HTTP_400_BAD_REQUEST
+            return self.error_response(
+                "to_user_id is required", status.HTTP_400_BAD_REQUEST
             )
 
-        # Check rate limit
+        if self.exceeds_rate_limit(request):
+            return self.error_response(
+                "You can only send 3 friend requests per minute",
+                status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        to_user = self.get_to_user(to_user_id)
+        if self.friend_request_already_sent(request.user, to_user):
+            return self.error_response(
+                "Friend request already sent", status.HTTP_400_BAD_REQUEST
+            )
+
+        friend_request = self.create_friend_request(request.user, to_user)
+        return Response(
+            FriendRequestSerializer(friend_request).data, status.HTTP_201_CREATED
+        )
+
+    def get_to_user_id(self, request):
+        return request.data.get("to_user_id")
+
+    def error_response(self, error_message, status_code):
+        return Response({"error": error_message}, status=status_code)
+
+    def exceeds_rate_limit(self, request):
         one_minute_ago = timezone.now() - timedelta(minutes=1)
         recent_requests = FriendRequest.objects.filter(
             from_user=request.user, created_at__gte=one_minute_ago
         )
-        if recent_requests.count() >= 3:
-            return Response(
-                {"error": "You can only send 3 friend requests per minute"},
-                status=status.HTTP_429_TOO_MANY_REQUESTS,
-            )
+        return recent_requests.count() >= 3
 
-        to_user = User.objects.get(id=to_user_id)
-        if FriendRequest.objects.filter(
-            from_user=request.user, to_user=to_user
-        ).exists():
-            return Response(
-                {"error": "Friend request already sent"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+    def get_to_user(self, to_user_id):
+        try:
+            return User.objects.get(id=to_user_id)
+        except User.DoesNotExist:
+            return self.error_response("User not found", status.HTTP_404_NOT_FOUND)
 
-        friend_request = FriendRequest.objects.create(
-            from_user=request.user, to_user=to_user
-        )
-        return Response(
-            FriendRequestSerializer(friend_request).data, status=status.HTTP_201_CREATED
-        )
+    def friend_request_already_sent(self, from_user, to_user):
+        return FriendRequest.objects.filter(
+            from_user=from_user, to_user=to_user
+        ).exists()
+
+    def create_friend_request(self, from_user, to_user):
+        return FriendRequest.objects.create(from_user=from_user, to_user=to_user)
 
 
 class FriendListView(ListAPIView):

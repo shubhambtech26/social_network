@@ -97,17 +97,17 @@ class ManageFriendRequestView(APIView):
                 )
         return self.create_response(serializer.errors, status.HTTP_400_BAD_REQUEST)
 
-    def get_friend_request(request_id, user):
+    def get_friend_request(self, request_id, user):
         return FriendRequest.objects.get(id=request_id, to_user=user)
 
-    def accept_friend_request(friend_request):
+    def accept_friend_request(self, friend_request):
         friend_request.is_accepted = True
         friend_request.save()
 
-    def reject_friend_request(friend_request):
+    def reject_friend_request(self, friend_request):
         friend_request.delete()
 
-    def create_response(data, status_code):
+    def create_response(self, data, status_code):
         return Response(data, status=status_code)
 
 

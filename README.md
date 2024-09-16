@@ -81,7 +81,11 @@ pip install -r requirements.txt
 Create a .env file with the following configuration:
 
 ```
-DATABASE_URL=postgres://USER:PASSWORD@localhost:5432/social_network_db
+POSTGRES_DB=social_network_db
+POSTGRES_USER=user
+POSTGRES_PASSWORD=password
+POSTGRES_HOST=db
+POSTGRES_PORT=5432
 ```
 
 Run Migrations:
